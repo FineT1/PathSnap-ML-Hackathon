@@ -8,6 +8,7 @@ lightgbm
 optuna
 pyproj
 shapely
+networkx
 folium
 matplotlib
 pyyaml
