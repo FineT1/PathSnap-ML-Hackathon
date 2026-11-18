@@ -1,0 +1,7 @@
+data/*
+!data/splits.csv
+data/processed/
+__pycache__/
+.venv/
+.env
+*.log

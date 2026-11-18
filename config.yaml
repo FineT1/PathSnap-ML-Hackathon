@@ -1,0 +1,25 @@
+# Starting values marked TODO must be set from EDA and justified in the report.
+seed: 42
+
+data:
+  train_dir: data/train
+  student_dir: data/student_test
+  splits_file: data/splits.csv
+  private_dir: ../pathsnap-private      # evaluator trips + ground truth; outside the repo
+  crs: EPSG:27700                       # candidate: British National Grid; justify in report
+
+matching:
+  candidate_radius_m: 50                # TODO from EDA
+  hmm_sigma_m: 20                       # TODO tune on train + student_test only
+
+models:                                 # need at least 5 compared
+  - logreg
+  - random_forest
+  - hist_gradient_boosting
+  - knn
+  - mlp
+
+tuning:
+  method: optuna                        # Bayesian (TPE)
+  n_trials: 50                          # TODO
+  objective: cv_macro_f1                # group CV on train trips only
