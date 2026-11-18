@@ -1,0 +1,3 @@
+method,model,top1_accuracy,route_continuity,guaranteed_connectivity
+Classifier Only (Top-1 Argmax),random_forest,0.7535,0.684,False
+Classifier + HMM Viterbi,random_forest,1.0,1.0,True

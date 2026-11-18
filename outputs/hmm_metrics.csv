@@ -1,0 +1,2 @@
+model_name,n_trips,mean_route_continuity,mean_top1_accuracy,mean_route_f1,mean_inferred_arcs_per_trip
+random_forest,2,1.0,,,0.0

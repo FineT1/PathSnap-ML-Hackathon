@@ -2,6 +2,12 @@ data/*
 !data/splits.csv
 data/processed/
 __pycache__/
+*.pyc
 .venv/
 .env
 *.log
+node_modules/
+frontend/node_modules/
+.pytest_cache/
+dist/
+frontend/dist/

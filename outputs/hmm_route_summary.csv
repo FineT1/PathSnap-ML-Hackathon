@@ -1,0 +1,3 @@
+trip_id,n_observations,n_route_arcs,n_collapsed_arcs,n_inferred_arcs,route_continuity,is_fully_connected,top1_accuracy,route_f1,route_overlap_jaccard
+trip_alpha,4,4,2,0,1.0,True,,,
+trip_beta,4,4,2,0,1.0,True,,,

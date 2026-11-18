@@ -1,7 +1,15 @@
-# Versions unverified; pin after testing.
+# Core packages
 numpy
 pandas
+scipy
 scikit-learn
+networkx
+pyproj
+shapely
 pyyaml
 matplotlib
 pyarrow
+fastapi
+uvicorn
+httpx
+python-multipart
