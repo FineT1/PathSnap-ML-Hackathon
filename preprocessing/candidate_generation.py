@@ -57,6 +57,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy.spatial import cKDTree
 
 from .road_network import build_road_network, project_coords, DEFAULT_CRS
 
@@ -219,12 +220,23 @@ def generate_candidates(
     # ------------------------------------------------------------------ #
     # 3. Candidate search
     # ------------------------------------------------------------------ #
-    rows: List[dict] = []
+    seg_dx = arc_to_x - arc_from_x
+    seg_dy = arc_to_y - arc_from_y
+    seg_l2 = seg_dx * seg_dx + seg_dy * seg_dy
+    seg_safe = np.where(seg_l2 == 0, 1.0, seg_l2)
+    col_chunks = {c: [] for c in SCHEMA_COLS_NO_LABEL if c != "trip_id"}
     zero_candidate_points = 0
 
-    for idx, (gps_row, px, py) in enumerate(
-        zip(gps_valid.itertuples(index=False), gps_x, gps_y)
-    ):
+    # Spatial index on arc midpoints. A segment whose closest point is within r of a GPS point
+    # has its midpoint within r + half its length, so this query returns every true candidate.
+    mid_xy = np.column_stack([(arc_from_x + arc_to_x) / 2.0, (arc_from_y + arc_to_y) / 2.0])
+    max_half_len = float(np.nanmax(arc_lengths)) / 2.0
+    tree = cKDTree(mid_xy)
+    cand_lists = tree.query_ball_point(
+        np.column_stack([gps_x, gps_y]), r=search_radius_m + max_half_len, workers=-1
+    )
+
+    for k, (gps_row, px, py) in enumerate(zip(gps_valid.itertuples(index=False), gps_x, gps_y)):
         gps_id      = int(gps_row.gps_point_id)
         gps_lon     = float(gps_row.lon)
         gps_lat     = float(gps_row.lat)
@@ -232,51 +244,49 @@ def generate_candidates(
         speed_mps   = float(gps_row.speed_mps)  if hasattr(gps_row, "speed_mps")   and not _is_nan(gps_row.speed_mps)   else np.nan
         time_gap    = float(gps_row.time_gap_s)  if hasattr(gps_row, "time_gap_s")  and not _is_nan(gps_row.time_gap_s)  else np.nan
 
-        # Compute distance from this GPS point to every valid arc.
-        distances = np.array([
-            _point_to_segment_distance(px, py, ax, ay, bx, by)
-            for ax, ay, bx, by in zip(arc_from_x, arc_from_y, arc_to_x, arc_to_y)
-        ])
-
-        # Filter to arcs within the search radius.
-        within_radius = distances <= search_radius_m
-        if not within_radius.any():
+        # Vectorised point-to-segment distance to every valid arc (same geometry as
+        # _point_to_segment_distance, computed in one NumPy pass per GPS point).
+        cand = np.sort(np.asarray(cand_lists[k], dtype=np.int64))
+        if cand.size == 0:
             zero_candidate_points += 1
             continue
+        ax_, ay_ = arc_from_x[cand], arc_from_y[cand]
+        dxs, dys, l2 = seg_dx[cand], seg_dy[cand], seg_l2[cand]
+        t = np.clip(((px - ax_) * dxs + (py - ay_) * dys) / np.where(l2 == 0, 1.0, l2), 0.0, 1.0)
+        t = np.where(l2 == 0, 0.0, t)
+        dist_c = np.hypot(px - (ax_ + t * dxs), py - (ay_ + t * dys))
 
-        # Sort by distance and keep only the closest max_candidates.
-        candidate_indices = np.where(within_radius)[0]
-        sorted_idx = candidate_indices[np.argsort(distances[candidate_indices])]
-        sorted_idx = sorted_idx[:max_candidates]
-
+        within = dist_c <= search_radius_m
+        if not within.any():
+            zero_candidate_points += 1
+            continue
+        cw, dw = cand[within], dist_c[within]
+        # default sort, same input order as the original, so ties break identically
+        order = np.argsort(dw)[:max_candidates]
+        sorted_idx = cw[order]
+        distances_sel = dw[order]
         n_cands = len(sorted_idx)
+        arc_bear = arc_bearings[sorted_idx]
 
-        for ci in sorted_idx:
-            arc_id    = int(arc_ids[ci])
-            dist      = float(distances[ci])
-            arc_bear  = float(arc_bearings[ci])
-            arc_len   = float(arc_lengths[ci])
+        # Bearing difference wrapped to [0, 180]; NaN when the GPS heading is unknown.
+        if not math.isnan(heading):
+            bdiff = np.abs(heading - arc_bear) % 360.0
+            bdiff = np.where(bdiff <= 180.0, bdiff, 360.0 - bdiff)
+        else:
+            bdiff = np.full(n_cands, np.nan)
 
-            # Bearing difference: NaN when GPS heading is unknown.
-            if not math.isnan(heading):
-                bdiff = _bearing_difference(heading, arc_bear)
-            else:
-                bdiff = np.nan
-
-            rows.append({
-                "gps_point_id"      : gps_id,
-                "candidate_arc_id"  : arc_id,
-                "distance_m"        : dist,
-                "bearing_diff_deg"  : bdiff,
-                "speed_mps"         : speed_mps,
-                "time_gap_s"        : time_gap,
-                "segment_length_m"  : arc_len,
-                "gps_lon"           : gps_lon,
-                "gps_lat"           : gps_lat,
-                "arc_bearing_deg"   : arc_bear,
-                "gps_heading_deg"   : heading,
-                "n_candidates"      : n_cands,
-            })
+        col_chunks["gps_point_id"].append(np.full(n_cands, gps_id, dtype=np.int64))
+        col_chunks["candidate_arc_id"].append(arc_ids[sorted_idx].astype(np.int64))
+        col_chunks["distance_m"].append(distances_sel)
+        col_chunks["bearing_diff_deg"].append(bdiff)
+        col_chunks["speed_mps"].append(np.full(n_cands, speed_mps))
+        col_chunks["time_gap_s"].append(np.full(n_cands, time_gap))
+        col_chunks["segment_length_m"].append(arc_lengths[sorted_idx])
+        col_chunks["gps_lon"].append(np.full(n_cands, gps_lon))
+        col_chunks["gps_lat"].append(np.full(n_cands, gps_lat))
+        col_chunks["arc_bearing_deg"].append(arc_bear)
+        col_chunks["gps_heading_deg"].append(np.full(n_cands, heading))
+        col_chunks["n_candidates"].append(np.full(n_cands, n_cands, dtype=np.int64))
 
     if zero_candidate_points:
         logger.warning(
@@ -286,14 +296,14 @@ def generate_candidates(
             search_radius_m,
         )
 
-    if not rows:
+    if not col_chunks["gps_point_id"]:
         logger.warning("generate_candidates: no candidates found for any GPS point.")
         return _empty_candidate_df()
 
-    result = pd.DataFrame(rows)
+    # Build the table once from column arrays (much lower memory than one dict per row).
+    result = pd.DataFrame({c: np.concatenate(v) for c, v in col_chunks.items()})
     logger.info(
-        "generate_candidates: %d GPS points → %d candidate rows "
-        "(%d zero-candidate points).",
+        "generate_candidates: %d GPS points -> %d candidate rows (%d zero-candidate points).",
         len(gps_valid),
         len(result),
         zero_candidate_points,
@@ -474,7 +484,7 @@ def prepare_training_candidates(
 
     # Build road network once (reused inside build_candidate_features).
     network = build_road_network(
-        trip_data["nodes"], trip_data["arcs"], crs=crs
+        trip_data["nodes"], trip_data["arcs"], crs=crs, build_graph=False
     )
 
     # Generate candidates + features.
@@ -497,7 +507,8 @@ def prepare_training_candidates(
         return _empty_candidate_df(trip_id=effective_id, with_label=True)
 
     # Attach reference labels.
-    cands = attach_training_labels(cands, trip_data["route"])
+    cands = add_relative_features(cands)
+    cands = attach_nearest_route_labels(cands, trip_data["route"])
 
     return cands
 
@@ -505,6 +516,48 @@ def prepare_training_candidates(
 # ---------------------------------------------------------------------------
 # Schema constants
 # ---------------------------------------------------------------------------
+
+def add_relative_features(candidates_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Per GPS point: dist_rank = rank of the candidate by distance (1 = closest),
+    dist_gap_m = its distance minus the closest candidate's distance.
+    Uses only candidates of the same GPS point, so it works the same at inference time.
+    """
+    df = candidates_df.copy()
+    g = df.groupby("gps_point_id", sort=False)["distance_m"]
+    df["dist_rank"] = g.rank(method="first").astype(float)
+    df["dist_gap_m"] = df["distance_m"] - g.transform("min")
+    return df
+
+
+def attach_nearest_route_labels(candidates_df: pd.DataFrame, route_df) -> pd.DataFrame:
+    """
+    Stricter label: for each GPS point, label 1 only for the CLOSEST candidate whose arc
+    is on the reference route; every other candidate is 0. A point with no on-route
+    candidate gets no positive. At most one positive per GPS point.
+    """
+    df = candidates_df.copy()
+    if route_df is None or route_df.empty:
+        df["label"] = np.nan
+        return df
+    route_set = set(route_df["arc_id"].unique())
+    on_route = np.flatnonzero(df["candidate_arc_id"].isin(route_set).to_numpy())
+    if on_route.size:
+        tmp = pd.DataFrame({
+            "pid": df["gps_point_id"].to_numpy()[on_route],
+            "d": df["distance_m"].to_numpy()[on_route],
+            "row": on_route,
+        })
+        best = tmp.sort_values(["pid", "d", "row"]).groupby("pid", sort=False).head(1)["row"].to_numpy()
+    else:
+        best = np.array([], dtype=int)
+    label = np.zeros(len(df), dtype=int)
+    label[best] = 1
+    df["label"] = label
+    logger.info("attach_nearest_route_labels: %d positives over %d GPS points.",
+                int(label.sum()), df["gps_point_id"].nunique())
+    return df
+
 
 #: Column order for the candidate feature table (without label).
 SCHEMA_COLS_NO_LABEL = [

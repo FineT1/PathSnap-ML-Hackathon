@@ -7,7 +7,7 @@ Run this script from the project root to:
   1. Load every training trip.
   2. Preprocess GPS tracks and road networks.
   3. Generate candidate features and reference labels.
-  4. Save outputs/candidate_features.csv and outputs/dataset_summary.csv.
+  4. Save data/processed/candidate_features.csv and results/dataset_summary.csv.
 
 Usage
 -----
@@ -88,8 +88,10 @@ def main():
     data_root   = PROJECT_ROOT / "data"
     train_dir   = data_root / "train"
     student_dir = data_root / "student_test"
-    out_dir     = PROJECT_ROOT / "outputs"
+    out_dir     = data_root / "processed"
     out_dir.mkdir(parents=True, exist_ok=True)
+    results_dir = PROJECT_ROOT / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
 
     splits_path = data_root / "splits.csv"
 
@@ -166,25 +168,16 @@ def main():
             log.info("─── Processing student_test trip: %s ───", tid)
 
             try:
-                td = load_trip(folder, trip_id=tid, require_route=False)
-                td = preprocess_trip(td, drop_invalid_gps=args.drop_invalid)
-
-                network = build_road_network(td["nodes"], td["arcs"], crs=args.crs)
-                cands = build_candidate_features(
-                    trip_id         = tid,
-                    track_df        = td["track"],
-                    nodes_df        = td["nodes"],
-                    arcs_df         = td["arcs"],
-                    search_radius_m = args.radius,
-                    max_candidates  = args.maxcand,
-                    crs             = args.crs,
-                    network         = network,
+                cands = prepare_training_candidates(
+                    trip_folder      = folder,
+                    trip_id          = tid,
+                    search_radius_m  = args.radius,
+                    max_candidates   = args.maxcand,
+                    crs              = args.crs,
+                    drop_invalid_gps = args.drop_invalid,
                 )
-                # No route → label column is NaN.
-                cands["label"] = float("nan")
                 all_candidates.append(cands)
-                all_trip_dicts.append(td)
-                log.info("  → %d candidate rows", len(cands))
+                log.info("  -> %d candidate rows", len(cands))
 
             except FileNotFoundError as exc:
                 log.warning("  Skipping student trip %s: %s", tid, exc)
@@ -205,6 +198,15 @@ def main():
             combined[col] = float("nan")
     combined = combined[SCHEMA_COLS]
 
+    # Fail loudly if any training trip produced no candidates: training would be incomplete.
+    if splits is not None:
+        expected = int((splits["partition"] == "train").sum())
+        produced = combined.loc[combined["trip_id"].isin(set(splits.loc[splits["partition"] == "train", "trip_id"])), "trip_id"].nunique()
+        if produced < expected:
+            log.error("Only %d of %d training trips produced candidates. Fix the errors above first.",
+                      produced, expected)
+            sys.exit(1)
+
     cand_path = out_dir / "candidate_features.csv"
     combined.to_csv(cand_path, index=False)
     log.info("Saved %d candidate rows to %s", len(combined), cand_path)
@@ -214,7 +216,7 @@ def main():
     # ------------------------------------------------------------------ #
     if all_trip_dicts:
         summary = summarise_dataset(all_trip_dicts)
-        summary_path = out_dir / "dataset_summary.csv"
+        summary_path = results_dir / "dataset_summary.csv"
         summary.to_csv(summary_path, index=False)
         log.info("Saved dataset summary (%d trips) to %s", len(summary), summary_path)
 

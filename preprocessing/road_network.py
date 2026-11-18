@@ -215,6 +215,7 @@ def build_road_network(
     nodes_df: pd.DataFrame,
     arcs_df: pd.DataFrame,
     crs: str = DEFAULT_CRS,
+    build_graph: bool = True,
 ) -> dict:
     """
     Build an enriched road-network representation from nodes and arcs tables.
@@ -329,7 +330,7 @@ def build_road_network(
     # 3. Build NetworkX directed graph (optional)
     # ------------------------------------------------------------------ #
     graph = None
-    if _NX_AVAILABLE:
+    if _NX_AVAILABLE and build_graph:
         graph = nx.DiGraph()
 
         # Add nodes with their projected coordinates as attributes.
@@ -367,3 +368,5 @@ def build_road_network(
         "transformer": transformer,
         "crs": crs,
     }
+
+

@@ -1,25 +1,26 @@
-# Starting values marked TODO must be set from EDA and justified in the report.
 seed: 42
 
 data:
-  train_dir: data/train
-  student_dir: data/student_test
   splits_file: data/splits.csv
-  private_dir: ../pathsnap-private      # evaluator trips + ground truth; outside the repo
-  crs: EPSG:27700                       # candidate: British National Grid; justify in report
+  candidates_file: data/processed/candidate_features.csv   # written by Person 1 (run_preprocessing.py)
+  private_dir: ../pathsnap-private                          # evaluator trips; never read in this stage
 
-matching:
-  candidate_radius_m: 50                # TODO from EDA
-  hmm_sigma_m: 20                       # TODO tune on train + student_test only
+features:                # explicit list. Identifiers, coordinates and raw angles are NOT features.
+  - distance_m
+  - bearing_diff_deg
+  - speed_mps
+  - time_gap_s
+  - segment_length_m
+  - n_candidates
+  - dist_rank
+  - dist_gap_m
 
-models:                                 # need at least 5 compared
-  - logreg
-  - random_forest
-  - hist_gradient_boosting
-  - knn
-  - mlp
-
-tuning:
-  method: optuna                        # Bayesian (TPE)
-  n_trials: 50                          # TODO
-  objective: cv_macro_f1                # group CV on train trips only
+modelling:
+  cv_folds: 5            # GroupKFold by trip, training trips only
+  neg_per_obs: 10        # training only: all correct candidates + up to 10 wrong ones per GPS point
+  models:
+    - logreg
+    - naive_bayes
+    - decision_tree
+    - random_forest
+    - hist_gradient_boosting
